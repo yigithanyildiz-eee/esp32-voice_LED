@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 Ses LED</title>
+</head>
+
+<body>
+
+<h2>ESP32 Ses Kontrollü LED</h2>
+
+<button onclick="connectBLE()">ESP32'ye Bağlan</button>
+<button onclick="startMic()">Mikrofonu Başlat</button>
+
+<h3 id="status">Bağlı değil</h3>
+<h1 id="level">Ses: 0</h1>
+
+<script>
+
+const serviceUUID =
+"12345678-1234-1234-1234-1234567890ab";
+
+const characteristicUUID =
+"abcd1234-5678-90ab-cdef-1234567890ab";
+
+let characteristic = null;
+
+async function connectBLE() {
+  try {
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ name: "ESP32-LED" }],
+      optionalServices: [serviceUUID]
+    });
+
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(serviceUUID);
+
+    characteristic =
+      await service.getCharacteristic(characteristicUUID);
+
+    document.getElementById("status").innerText =
+      "ESP32 BAĞLANDI";
+
+  } catch(error) {
+    document.getElementById("status").innerText =
+      "BLE HATA: " + error;
+  }
+}
+
+async function startMic() {
+  try {
+    const stream =
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    const audioContext = new AudioContext();
+    const source =
+      audioContext.createMediaStreamSource(stream);
+
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+
+    source.connect(analyser);
+
+    const data = new Uint8Array(analyser.fftSize);
+
+    function measureSound() {
+      analyser.getByteTimeDomainData(data);
+
+      let sum = 0;
+
+      for (let i = 0; i < data.length; i++) {
+        const sample = (data[i] - 128) / 128;
+        sum += sample * sample;
+      }
+
+      const rms = Math.sqrt(sum / data.length);
+
+      let level = Math.round(rms * 500);
+      level = Math.max(0, Math.min(100, level));
+
+      document.getElementById("level").innerText =
+        "Ses: " + level;
+
+      sendBLE(level);
+
+      requestAnimationFrame(measureSound);
+    }
+
+    measureSound();
+
+  } catch(error) {
+    alert("Mikrofon hatası: " + error);
+  }
+}
+
+let lastSend = 0;
+
+async function sendBLE(level) {
+  if (!characteristic) return;
+
+  const now = Date.now();
+
+  if (now - lastSend < 100) return;
+  lastSend = now;
+
+  try {
+    const encoder = new TextEncoder();
+
+    await characteristic.writeValue(
+      encoder.encode(level.toString())
+    );
+
+  } catch(error) {
+    console.log(error);
+  }
+}
+
+</script>
+
+</body>
+</html>
