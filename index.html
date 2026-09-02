@@ -3,18 +3,21 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ESP32 Ses LED</title>
+  <title>ESP32 Gitar Spectrum</title>
 </head>
 
 <body>
 
-<h2>ESP32 Ses Kontrollü LED</h2>
+<h2>ESP32 Gitar Frekans LED</h2>
 
 <button onclick="connectBLE()">ESP32'ye Bağlan</button>
 <button onclick="startMic()">Mikrofonu Başlat</button>
 
 <h3 id="status">Bağlı değil</h3>
-<h1 id="level">Ses: 0</h1>
+
+<p>LOW: <span id="low">0</span></p>
+<p>MID: <span id="mid">0</span></p>
+<p>HIGH: <span id="high">0</span></p>
 
 <script>
 
@@ -25,16 +28,22 @@ const characteristicUUID =
 "abcd1234-5678-90ab-cdef-1234567890ab";
 
 let characteristic = null;
+let lastSend = 0;
 
+
+// BLE
 async function connectBLE() {
   try {
+
     const device = await navigator.bluetooth.requestDevice({
       filters: [{ name: "ESP32-LED" }],
       optionalServices: [serviceUUID]
     });
 
     const server = await device.gatt.connect();
-    const service = await server.getPrimaryService(serviceUUID);
+
+    const service =
+      await server.getPrimaryService(serviceUUID);
 
     characteristic =
       await service.getCharacteristic(characteristicUUID);
@@ -43,76 +52,152 @@ async function connectBLE() {
       "ESP32 BAĞLANDI";
 
   } catch(error) {
+
     document.getElementById("status").innerText =
       "BLE HATA: " + error;
+
   }
 }
 
+
+// MİKROFON + FFT
 async function startMic() {
+
   try {
+
     const stream =
-      await navigator.mediaDevices.getUserMedia({ audio: true });
+      await navigator.mediaDevices.getUserMedia({
+        audio: true
+      });
 
     const audioContext = new AudioContext();
+
     const source =
       audioContext.createMediaStreamSource(stream);
 
-    const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 512;
+    const analyser =
+      audioContext.createAnalyser();
+
+    analyser.fftSize = 2048;
+
+    analyser.smoothingTimeConstant = 0.7;
 
     source.connect(analyser);
 
-    const data = new Uint8Array(analyser.fftSize);
+    const frequencyData =
+      new Uint8Array(analyser.frequencyBinCount);
 
-    function measureSound() {
-      analyser.getByteTimeDomainData(data);
+    const sampleRate =
+      audioContext.sampleRate;
+
+    const binWidth =
+      sampleRate / analyser.fftSize;
+
+
+    function getBandLevel(minFreq, maxFreq) {
+
+      const startBin =
+        Math.floor(minFreq / binWidth);
+
+      const endBin =
+        Math.ceil(maxFreq / binWidth);
 
       let sum = 0;
+      let count = 0;
 
-      for (let i = 0; i < data.length; i++) {
-        const sample = (data[i] - 128) / 128;
-        sum += sample * sample;
+      for (let i = startBin; i <= endBin; i++) {
+
+        sum += frequencyData[i];
+        count++;
+
       }
 
-      const rms = Math.sqrt(sum / data.length);
+      if (count === 0)
+        return 0;
 
-      let level = Math.round(rms * 500);
-      level = Math.max(0, Math.min(100, level));
+      let average =
+        sum / count;
 
-      document.getElementById("level").innerText =
-        "Ses: " + level;
+      // FFT değeri 0-255
+      // Bunu 0-100'e çeviriyoruz
+      let level =
+        Math.round((average / 255) * 100);
 
-      sendBLE(level);
+      level =
+        Math.max(0, Math.min(100, level));
 
-      requestAnimationFrame(measureSound);
+      return level;
     }
 
-    measureSound();
+
+    function analyse() {
+
+      analyser.getByteFrequencyData(frequencyData);
+
+      const low =
+        getBandLevel(80, 200);
+
+      const mid =
+        getBandLevel(200, 600);
+
+      const high =
+        getBandLevel(600, 2000);
+
+
+      document.getElementById("low").innerText =
+        low;
+
+      document.getElementById("mid").innerText =
+        mid;
+
+      document.getElementById("high").innerText =
+        high;
+
+
+      sendBLE(low, mid, high);
+
+      requestAnimationFrame(analyse);
+    }
+
+    analyse();
 
   } catch(error) {
+
     alert("Mikrofon hatası: " + error);
+
   }
 }
 
-let lastSend = 0;
 
-async function sendBLE(level) {
-  if (!characteristic) return;
+// BLE GÖNDER
+async function sendBLE(low, mid, high) {
+
+  if (!characteristic)
+    return;
 
   const now = Date.now();
 
-  if (now - lastSend < 100) return;
+  if (now - lastSend < 100)
+    return;
+
   lastSend = now;
 
+  const message =
+    low + "," + mid + "," + high;
+
   try {
-    const encoder = new TextEncoder();
+
+    const encoder =
+      new TextEncoder();
 
     await characteristic.writeValue(
-      encoder.encode(level.toString())
+      encoder.encode(message)
     );
 
   } catch(error) {
+
     console.log(error);
+
   }
 }
 
